@@ -349,10 +349,15 @@ dictEntry *dictAddRaw(dict *d, void *key)
     dictEntry *entry;
     dictht *ht;
 
+    // 如果字典处于rehash过程中，则处理一部分（10个key）的数据迁移。
+    // 每次操作对应的数据迁移量是有效的，这样是为了避免单次操作的阻塞。
+    // 个人理解的话渐进式哈希其实也是一种异步更新的思想在里面，
+    // 如果在常规的应用场景中在数据更新时是需要考虑加锁保证共享资源的安全性的，由于redis是单个工作线程反而在这里更加轻量化了。
     if (dictIsRehashing(d)) _dictRehashStep(d);
 
     /* Get the index of the new element, or -1 if
      * the element already exists. */
+    // 添加重复key直接返回
     if ((index = _dictKeyIndex(d, key)) == -1)
         return NULL;
 
@@ -364,6 +369,7 @@ dictEntry *dictAddRaw(dict *d, void *key)
     ht->used++;
 
     /* Set the hash entry fields. */
+    // 为什么redis这里只设置Entry的key属于而不设置value属于呢？ 需要在上层设置？ 这是合意？
     dictSetKey(d, entry, key);
     return entry;
 }
@@ -387,8 +393,12 @@ int dictReplace(dict *d, void *key, void *val)
      * as the previous one. In this context, think to reference counting,
      * you want to increment (set), and then decrement (free), and not the
      * reverse. */
+    // 其实翻译过来就是：在处理值替换的过程中应该按照以下顺序即设置新值并释放旧值
+    //（由于旧值也是一个字符串对象，并且redis使用引用计数法维护对象的生命周期，这里的操作其实就是修改引用计数）
     auxentry = *entry;
+    // 下面着两步操作就分别是赋值和对旧值对操作过程。
     dictSetVal(d, entry, val);
+    // 其实在看代码对时候也有一点自己对想法,d->type感觉是在创建key的时候就已经设置了的，并且这个type应该只是区分使用场景，比如：服务器使用的字典，客户端的字典对象等
     dictFreeVal(d, &auxentry);
     return 0;
 }
@@ -492,6 +502,7 @@ dictEntry *dictFind(dict *d, const void *key)
     unsigned int h, idx, table;
 
     if (d->ht[0].size == 0) return NULL; /* We don't have a table at all */
+    // 读操作也关联了rehash的进程
     if (dictIsRehashing(d)) _dictRehashStep(d);
     h = dictHashKey(d, key);
     for (table = 0; table <= 1; table++) {
@@ -502,6 +513,8 @@ dictEntry *dictFind(dict *d, const void *key)
                 return he;
             he = he->next;
         }
+        // 这里的逻辑也需要注意下，只要在rehash的过程中才需要检查ht[1]，
+        // 否则若在第一个哈希表中没有找到目标数据则可以直接返回
         if (!dictIsRehashing(d)) return NULL;
     }
     return NULL;

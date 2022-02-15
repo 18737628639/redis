@@ -88,9 +88,13 @@ typedef struct dict {
 typedef struct dictIterator {
     dict *d;
     long index;
+    // safe：1表示该迭代器是需要安全能力的迭代器
     int table, safe;
     dictEntry *entry, *nextEntry;
     /* unsafe iterator fingerprint for misuse detection. */
+    // 注释具体可参考：dict.c文件的dictFingerprint()
+    // 表示当前字典状态的一个指纹值，感觉和java里FAIl-FAST的思想有点像
+    // 释放迭代器的时候会判断迭代前后该值的内容是否相等，如果不同则说明用户在迭代过程中进行了非法操作
     long long fingerprint;
 } dictIterator;
 

@@ -89,6 +89,7 @@ uint32_t dictGetHashFunctionSeed(void) {
     return dict_hash_function_seed;
 }
 
+// TODO 感觉可以了解下murmurhash2的算法，这里可以写篇博客介绍下（加解密，固定长度的哈希算法，一致性哈希等）
 /* MurmurHash2, by Austin Appleby
  * Note - This code makes a few assumptions about how your machine behaves -
  * 1. We can read a 4-byte value from any address without crashing
@@ -200,14 +201,22 @@ int dictResize(dict *d)
     return dictExpand(d, minimal);
 }
 
-/* Expand or create the hash table */
+/* 
+    Expand or create the hash table
+    field *d : 表示字典对象
+    field size : 表示字典对象已存储的dictEntry数量
+    函数功能：自动扩缩容并开启rehash
+ */
 int dictExpand(dict *d, unsigned long size)
 {
     dictht n; /* the new hash table */
+    // 这里有点意思，最开始看函数名称以为dictExpand函数只用于做字典的扩容，原来发现所容也可以通过该函数完成
+    // _dictNextPower(size) 函数返回第一个大于used的幂次值
     unsigned long realsize = _dictNextPower(size);
 
     /* the size is invalid if it is smaller than the number of
      * elements already inside the hash table */
+    //double-check 后验
     if (dictIsRehashing(d) || d->ht[0].used > size)
         return DICT_ERR;
 
@@ -252,6 +261,7 @@ int dictRehash(dict *d, int n) {
         /* Note that rehashidx can't overflow as we are sure there are more
          * elements because ht[0].used != 0 */
         assert(d->ht[0].size > (unsigned long)d->rehashidx);
+        // 有可能在扩容的过程中，某个Bucket还没有存值，这里就是为了解决这个边界case的
         while(d->ht[0].table[d->rehashidx] == NULL) {
             d->rehashidx++;
             if (--empty_visits == 0) return 1;
@@ -277,7 +287,9 @@ int dictRehash(dict *d, int n) {
     /* Check if we already rehashed the whole table... */
     if (d->ht[0].used == 0) {
         zfree(d->ht[0].table);
+        // 释放ht[0]的空间后在将ht[0] 指向ht[1]
         d->ht[0] = d->ht[1];
+        // 创建一个空的哈希表结构
         _dictReset(&d->ht[1]);
         d->rehashidx = -1;
         return 0;
@@ -288,8 +300,9 @@ int dictRehash(dict *d, int n) {
 }
 
 long long timeInMilliseconds(void) {
+    // timeval: 该结构体是Linux系统中定义, tv_sec为Epoch到创建struct timeval时的秒数，tv_usec为微秒数，即秒后面的零头
     struct timeval tv;
-
+    // 处理timeval的功能函数
     gettimeofday(&tv,NULL);
     return (((long long)tv.tv_sec)*1000)+(tv.tv_usec/1000);
 }
@@ -299,6 +312,8 @@ int dictRehashMilliseconds(dict *d, int ms) {
     long long start = timeInMilliseconds();
     int rehashes = 0;
 
+    // 这里 调用100次rehash函数，每次处理10个buckets，这里就是至多迁移1000个buckets
+    // 懂了！ 这里是redis定时任务的调用，dictRehashMilliseconds函数传入的ms是处理时间阈值，dictRehash(d,100)中的100是操作次数。
     while(dictRehash(d,100)) {
         rehashes += 100;
         if (timeInMilliseconds()-start > ms) break;
@@ -349,7 +364,7 @@ dictEntry *dictAddRaw(dict *d, void *key)
     dictEntry *entry;
     dictht *ht;
 
-    // 如果字典处于rehash过程中，则处理一部分（10个key）的数据迁移。
+    // 如果字典处于rehash过程中，则处理一部分（10个buckets）的数据迁移。
     // 每次操作对应的数据迁移量是有效的，这样是为了避免单次操作的阻塞。
     // 个人理解的话渐进式哈希其实也是一种异步更新的思想在里面，
     // 如果在常规的应用场景中在数据更新时是需要考虑加锁保证共享资源的安全性的，由于redis是单个工作线程反而在这里更加轻量化了。
@@ -398,7 +413,7 @@ int dictReplace(dict *d, void *key, void *val)
     auxentry = *entry;
     // 下面着两步操作就分别是赋值和对旧值对操作过程。
     dictSetVal(d, entry, val);
-    // 其实在看代码对时候也有一点自己对想法,d->type感觉是在创建key的时候就已经设置了的，并且这个type应该只是区分使用场景，比如：服务器使用的字典，客户端的字典对象等
+    // 其实在看代码对时候也有一点自己对想法,d->type感觉是在创建key的时候就已经设置了的，并且这个type应该只是区分使用场景，比如：服务器使用的字典，客户端的字典对象等（可以看redis.c文件，已经印证这个想法！）
     dictFreeVal(d, &auxentry);
     return 0;
 }
@@ -438,6 +453,7 @@ static int dictGenericDelete(dict *d, const void *key, int nofree)
                 else
                     d->ht[table].table[idx] = he->next;
                 if (!nofree) {
+                    // TODO 这里一只没想明白dict->提供的DeConstruct是做什么用的？
                     dictFreeKey(d, he);
                     dictFreeVal(d, he);
                 }
@@ -448,6 +464,7 @@ static int dictGenericDelete(dict *d, const void *key, int nofree)
             prevHe = he;
             he = he->next;
         }
+        // 如果不在rehash中，则不需要验证ht[1]
         if (!dictIsRehashing(d)) break;
     }
     return DICT_ERR; /* not found */
@@ -484,6 +501,8 @@ int _dictClear(dict *d, dictht *ht, void(callback)(void *)) {
     /* Free the table and the allocated cache structure */
     zfree(ht->table);
     /* Re-initialize the table */
+    // dictClear不直接调用dictReset方法的原因猜测是为了防止内存泄漏，
+    // 先释放dict中各个Key所占用的空间，后释放外层dict结构空间
     _dictReset(ht);
     return DICT_OK; /* never fails */
 }
@@ -528,11 +547,12 @@ void *dictFetchValue(dict *d, const void *key) {
 }
 
 /* A fingerprint is a 64 bit number that represents the state of the dictionary
- * at a given time, it's just a few dict properties xored together.
+ * at a given time, it's just a few dict properties xored together.（dict结构多个属性值的异或结果）
  * When an unsafe iterator is initialized, we get the dict fingerprint, and check
  * the fingerprint again when the iterator is released.
  * If the two fingerprints are different it means that the user of the iterator
  * performed forbidden operations against the dictionary while iterating. */
+// 这是hashmap迭代器低属性，用于迭代器遍历前后的对比认证
 long long dictFingerprint(dict *d) {
     long long integers[6], hash = 0;
     int j;
@@ -587,8 +607,10 @@ dictIterator *dictGetSafeIterator(dict *d) {
 
 dictEntry *dictNext(dictIterator *iter)
 {
+    // 需要代码主动退出循环？
     while (1) {
         if (iter->entry == NULL) {
+            // 这里一般都不是遍历第一个字典
             dictht *ht = &iter->d->ht[iter->table];
             if (iter->index == -1 && iter->table == 0) {
                 if (iter->safe)
@@ -608,6 +630,9 @@ dictEntry *dictNext(dictIterator *iter)
             }
             iter->entry = ht->table[iter->index];
         } else {
+            // 如果当前entry不为空，则直接获取下一个entry就好，为空则有两种可能需要判断：
+            //      1. 第一次进入循环（迭代器初始化后第一次使用）
+            //      2. entry原本就为空
             iter->entry = iter->nextEntry;
         }
         if (iter->entry) {
